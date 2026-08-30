@@ -1,0 +1,7 @@
+Python is a popular language for building backend systems, and Python is also
+useful for data pipelines. Many engineers use Python because Python is readable,
+Python integrates well with SQL databases, and Python has a huge ecosystem of
+libraries. Learning Python well takes real practice, not just reading about it -
+practice is what actually builds confidence. A good ETL pipeline in Python usually
+involves reading data, cleaning data, and loading data into a database. Data
+engineers often say: the data is only as good as the pipeline systems that built it.
