@@ -116,6 +116,53 @@ print(next(g))       # RESUMES after the second yield, prints "C", falls off the
 
 When a generator function finally finishes (falls off the end, or hits an explicit `return`), calling `next()` one more time raises `StopIteration` — this is exactly what a `for` loop is catching silently for you every time you loop over anything.
 
+### `yield` is two-way — receiving values back in, not just sending them out
+
+`yield` doesn't only hand a value *out*; the exact spot where it pauses can also *receive* a value back in, the next time the generator is resumed. A bare assignment like `x = yield 1` isn't "assign 1 to x" — it's "yield 1 out, freeze right here mid-statement, and whatever value comes back in when resumed becomes x."
+
+```python
+def gen():
+    print("start")
+    x = yield 1
+    print(f"received: {x}")
+    yield 2
+
+g = gen()
+print(next(g))
+print(next(g))
+'''
+start
+1
+received: None
+2
+'''
+```
+
+Think of the generator as someone reading this script out loud, who freezes solid the instant they read the word `yield`, and only keeps reading — from that exact frozen word — when you tap them on the shoulder (`next()`). Anything they say while reading happens automatically, as a side effect of that tap; the only thing you actually catch yourself is the one value they hand you the moment they freeze.
+
+Traced call by call:
+
+- **`next(g)` #1** — starts the function from the top. Prints `start`. Reaches `x = yield 1`: sends `1` out and freezes *mid-statement*, before the assignment to `x` has actually happened. `next()` returns that `1`.
+- **`next(g)` #2** — resumes from exactly that frozen spot. `next()` always resumes by handing back `None` (it's shorthand for `g.send(None)`), so the frozen assignment finally completes as `x = None`. Execution continues: prints `received: None`. Reaches `yield 2`: sends `2` out and freezes again. `next()` returns that `2`.
+
+That's why the output is `start`, `1`, `received: None`, `2` — two of those lines are values you explicitly printed (`1`, `2`, from `print(next(g))`), and two are things the generator printed automatically *while running toward* those freeze points (`start`, `received: None`).
+
+If you resume with `g.send("hello")` instead of `next(g)`, that same frozen spot completes as `x = "hello"` instead of `x = None` — this two-way "send a value back in" mechanism is exactly what makes generators the foundation for coroutines, which comes back around in the `asyncio` doc later.
+
+```python
+'''
+next(g) runs the generator until it hits a yield
+anything printed along the way happens automatically, as a side effect
+it stops only at yield, and hands back that value
+
+like a person reading a script out loud
+they freeze the instant they hit "yield"
+resume only when tapped again with next()
+whatever they say while reading is automatic, not asked for separately
+the only thing print(next(g)) shows is the note handed at the freeze point
+'''
+```
+
 ## 5. `yield from` — delegating to another generator
 
 ```python
@@ -170,6 +217,26 @@ for n in Countdown(3):
     print(n)          # 3, 2, 1
 ```
 
+`__iter__` is what a `for` loop calls once, right at the start, to get "the thing that will actually do the walking" (the iterator). Here it just `return self` — meaning "I am my own iterator, don't go looking for a separate object, this same instance handles both roles."
+
+`__next__` is what the `for` loop then calls repeatedly, once per loop iteration, to get the next value. It must do one of two things every time: return the next value, or raise `StopIteration` to say "there's nothing left, stop looping."
+
+```python
+    def __next__(self):
+        if self.current <= 0:
+            raise StopIteration
+        self.current -= 1
+        return self.current + 1
+        '''
+        can also be written as:
+        value = self.current      # grab the value before changing anything
+        self.current -= 1          # then update state for next time
+        return value                 # return what was grabbed, untouched
+        '''
+```
+
+Same output either way — the second version is just easier to read on a first pass, since nothing has to be mentally "undone" to see what gets returned.
+
 This is genuinely the same mechanism as `csv.DictReader` — it's a class implementing exactly this `__iter__`/`__next__` pair, which is why it behaved like "a cursor that only moves forward" back in Topic 3. Now you know precisely why.
 
 ## 7. `itertools` — worth knowing exists, not memorizing cold
@@ -186,6 +253,28 @@ list(islice(counter, 3))                 # [10, 11, 12] - islice is what makes w
 ```
 
 `islice` is worth remembering specifically — it's the safe way to pull a limited number of items out of a generator (even an infinite one) without accidentally trying to convert the whole thing to a `list` and hanging forever.
+
+### Getting just one element, not the whole thing
+
+A generator has no indexing at all — `gen[0]` raises `TypeError: 'generator' object is not subscriptable`. That's not a missing feature, it's a direct consequence of how generators work: there's no way to know what's at "position 5" without first walking through positions 0-4, and once you've walked past a position you can't get it back.
+
+To get just the **first** element, `next()` is exactly that:
+
+```python
+gen = squares_up_to(5)
+first = next(gen)     # consumes just that one element, leaves the rest untouched
+```
+
+To get a **specific later element** without materializing everything in between, `islice` does it without building any intermediate list:
+
+```python
+from itertools import islice
+
+gen = squares_up_to(5)
+third = next(islice(gen, 2, 3))    # skip 2, take the next 1 -> the element at index 2
+```
+
+This still **consumes** everything up through that point on the original `gen` — there's no way to jump to index `2` without passing through `0` and `1` first, the one-way-cursor rule again. If you need to access several specific indices, or the same index more than once, that's a sign you want a `list`, not a generator — convert once with `list(gen)` and index normally from then on.
 
 ## 8. When to reach for which — the practical decision
 
