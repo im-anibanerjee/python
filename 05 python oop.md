@@ -125,6 +125,8 @@ t = Transaction.from_dict({"amount": 500})    # calling the classmethod ON THE C
 Transaction.is_valid_amount(-5)                # False — calling the staticmethod, also on the class
 ```
 
+*(§19 at the end of this doc walks through this same distinction in much more depth — full worked examples of each kind alone, then combined, plus the decision rule for which to reach for.)*
+
 ## 5. Inheritance
 
 ```python
@@ -517,9 +519,132 @@ class Money:
 - `frozen=True` — makes instances immutable after creation (`m.amount = 5` raises `FrozenInstanceError`) and, as covered in §10, makes them safely hashable as a side effect.
 - `order=True` — generates `__lt__`, `__le__`, `__gt__`, `__ge__` by comparing fields in the order they're declared, so instances become sortable for free.
 
+## 19. Instance methods vs `@classmethod` vs `@staticmethod` — worked through in depth
+
+This expands on §4 above. Every method defined inside a class automatically receives something as its first argument — that's the entire distinction between the three:
+
+- instance method → `self`, the specific object it was called on
+- `@classmethod` → `cls`, the class itself
+- `@staticmethod` → neither — it's a plain function that just happens to live inside the class body
+
+**Instance method only — needs `self`, because it needs THIS object's own data:**
+
+```python
+class Pizza:
+    def __init__(self, toppings, size):
+        self.toppings = toppings
+        self.size = size
+
+    def price(self):                      # instance method — takes self
+        base = {"small": 150, "medium": 250, "large": 350}[self.size]
+        return base + len(self.toppings) * 30
+
+p1 = Pizza(["cheese", "mushroom"], "medium")
+p2 = Pizza(["cheese"], "small")
+print(p1.price())   # 310
+print(p2.price())   # 180
+```
+
+`price()` gives a different answer for `p1` vs `p2` because it reads `self.toppings` and `self.size` — data that belongs to that specific pizza. That's the defining trait of an instance method: it can't be answered without knowing which object you're asking about. This is what you'll write most of the time.
+
+**`@classmethod` only — needs `cls`, because it works with the class, not one object:**
+
+```python
+class Pizza:
+    def __init__(self, toppings, size):
+        self.toppings = toppings
+        self.size = size
+
+    def __repr__(self):
+        return f"Pizza({self.toppings}, '{self.size}')"
+
+    @classmethod
+    def margherita(cls, size="medium"):        # classmethod — takes cls, not self
+        return cls(["cheese", "tomato"], size)   # cls(...) means "call whichever class this was invoked on"
+
+p1 = Pizza.margherita()          # called on the CLASS, not an instance — no pizza exists yet, that's the point
+print(p1)                          # Pizza(['cheese', 'tomato'], 'medium')
+```
+
+This pattern is an **alternate constructor** — instead of forcing every caller to remember `Pizza(["cheese", "tomato"], "medium")`, you give them a named, self-documenting way to build the common case. `cls` matters specifically because of inheritance:
+
+```python
+class StuffedCrustPizza(Pizza):
+    pass
+
+s = StuffedCrustPizza.margherita()
+print(type(s))    # <class 'StuffedCrustPizza'> — NOT Pizza!
+```
+
+Because `margherita` uses `cls(...)` instead of hardcoding `Pizza(...)`, calling it via a subclass correctly returns an instance of *that subclass*. Hardcoding the class name would silently break the moment someone subclassed `Pizza` — this is the real reason `classmethod` exists instead of just writing a plain function.
+
+**`@staticmethod` only — needs neither, it's just grouped here for organization:**
+
+```python
+class Pizza:
+    VALID_SIZES = {"small", "medium", "large"}
+
+    @staticmethod
+    def is_valid_size(size):              # no self, no cls — just a plain function
+        return size in Pizza.VALID_SIZES
+
+print(Pizza.is_valid_size("medium"))   # True
+print(Pizza.is_valid_size("jumbo"))     # False
+```
+
+`is_valid_size` doesn't need a specific pizza (`self`), and it doesn't need to know its class dynamically (`cls`) either — it's a pure utility check. It would behave identically as a standalone function sitting outside the class; the only reason to nest it as `@staticmethod` is namespacing — `Pizza.is_valid_size(...)` signals "this belongs with `Pizza`" instead of leaving a loose function floating in the module that someone might not connect back to it.
+
+**All three together, doing real work in one class:**
+
+```python
+class Pizza:
+    VALID_SIZES = {"small": 150, "medium": 250, "large": 350}   # size -> base price
+
+    def __init__(self, toppings, size):
+        if not Pizza.is_valid_size(size):
+            raise ValueError(f"invalid size: {size}")
+        self.toppings = toppings
+        self.size = size
+
+    def __repr__(self):
+        return f"Pizza({self.toppings}, '{self.size}')"
+
+    def price(self):                                     # instance method — needs THIS pizza's own data
+        base = Pizza.VALID_SIZES[self.size]
+        return base + len(self.toppings) * 30
+
+    @classmethod
+    def margherita(cls, size="medium"):                    # classmethod — alternate constructor, stays correct under subclassing
+        return cls(["cheese", "tomato"], size)
+
+    @staticmethod
+    def is_valid_size(size):                                # staticmethod — utility, needs neither self nor cls
+        return size in Pizza.VALID_SIZES
+
+
+p = Pizza.margherita("large")          # classmethod builds it
+print(p)                                  # Pizza(['cheese', 'tomato'], 'large')
+print(p.price())                          # instance method: 350 + 30 = 380
+print(Pizza.is_valid_size("small"))     # staticmethod: True
+
+bad = Pizza(["cheese"], "jumbo")        # __init__ calls the staticmethod internally -> ValueError: invalid size: jumbo
+```
+
+`__init__` calling `Pizza.is_valid_size(size)` shows a static method being used *internally* by an instance method — that's completely normal. The three categories describe what a method *needs*, not who's allowed to call it.
+
+**The decision rule, distilled for interviews:**
+
+Does the method need one specific object's own data (`self.something`)? → **instance method** — your default; reach for it unless you have a specific reason not to.
+
+Does the method need to build an instance a different way, or touch class-level (shared) data, in a way that should stay correct under subclassing? → **`@classmethod`**.
+
+Does the method conceptually belong with the class but touches neither instance nor class state — a pure helper grouped here just for organization? → **`@staticmethod`**.
+
+Interview one-liner: *"instance methods operate on an object, classmethods operate on the class itself — usually as alternate constructors — and staticmethods operate on neither, they're just namespaced utility functions."*
+
 ---
 
-## Practice questions — Part 1
+## Practice questions
 
 1. **Build a `BankAccount` class** with `owner` (str) and `balance` (float, default `0`). Add methods `deposit(amount)` and `withdraw(amount)` — `withdraw` should raise a `ValueError` (Topic 1!) if the withdrawal would take the balance negative. Add a `__repr__` so printing an account looks like `BankAccount(owner='Ani', balance=500)`.
 
@@ -528,8 +653,6 @@ class Money:
 3. **`__eq__` vs default equality.** Create two separate (non-dataclass) `Transaction` objects with identical `category` and `amount`, *without* writing `__eq__`. Confirm `t1 == t2` is `False`. Then add `__eq__` and confirm it becomes `True`. Explain in your own words, in one or two lines, *why* Python needs to be told what equality means for your own classes when it already knows for ints and strings.
 
 4. **Rewrite as a dataclass.** Take your `BankAccount` from Q1 and rewrite it using `@dataclass` instead. You'll find `withdraw`'s validation logic doesn't fit neatly into a dataclass's auto-generated `__init__` — figure out how to still raise the `ValueError` on an invalid withdrawal (hint: the validation doesn't have to live in `__init__` at all; it can live in the `withdraw` method itself, same as before — `@dataclass` only replaces the boilerplate, not every method you write).
-
-## Practice questions — Part 2 (the deep-dive additions)
 
 5. **Property.** Take your `BankAccount` from Q1 and convert `balance` into a `@property` with a setter that raises `ValueError` on a direct negative assignment (`account.balance = -50`), separate from the validation already inside `withdraw`. In a line or two: why might you want both — the setter guard *and* `withdraw`'s own check?
 
@@ -541,6 +664,10 @@ class Money:
 
 9. **Dataclass, done right.** Write a `Cart` dataclass with a mutable `items: list` field using `field(default_factory=list)` (not `= []`), and a `__post_init__` that raises `ValueError` if `owner` is an empty string. Show what happens if you try `items: list = []` directly instead.
 
+10. **Instance vs classmethod vs staticmethod, combined.** Take your `BankAccount` from Q1. Add a `@classmethod` `from_deposit_only(cls, owner, initial_deposit)` — an alternate constructor that starts the account at balance `0` and immediately deposits `initial_deposit`. Add a `@staticmethod` `is_valid_owner_name(name)` that returns `False` for an empty string and `True` otherwise, and have `__init__` call it internally to validate `owner`. Then create a `SavingsAccount(BankAccount)` subclass and call `SavingsAccount.from_deposit_only(...)` — confirm with `type()` that you get back a `SavingsAccount`, not a `BankAccount`.
+
+11. **Explain in your own words**, in 2-3 lines: why does `cls(...)` inside a classmethod behave differently from hardcoding the class name directly, once subclasses are involved?
+
 ---
 
-*Same as always — write real code, paste it when done, I'll check it. This one's bigger, so take your time — Part 1 and Part 2 can be two separate sittings if you want, just tell me which you're submitting. Say "next" when you're fully through both parts and I'll build the doc for venvs & package management.*
+*Same as always — write real code, paste it when done, I'll check it. This one's bigger, so take your time — feel free to split it across a couple of sittings, just tell me which questions you're submitting. Say "next" when you're fully through and I'll build the doc for venvs & package management.*
