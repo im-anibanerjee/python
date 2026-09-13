@@ -86,6 +86,30 @@ print(timer.elapsed)     # accessible afterwards — __enter__ returned self
 
 Trace it: `Timer()` builds an instance. `__enter__` runs, records the start time, and `return self` means the instance itself is what `timer` refers to inside the `with` block — so anything you set on `self` during `__enter__` or inside the block is reachable through `timer` both inside and after the block. The block runs (`total = sum(...)`). `__exit__` runs, computes elapsed time, prints it. This is the class-based sibling of the `Timer` decorator you already built in the decorators doc's practice — same idea (measure elapsed time around some code), different mechanism (`__enter__`/`__exit__` instead of `__call__`), and worth noticing they solve overlapping problems from two different angles: a decorator wraps a *function you're calling repeatedly*; a context manager wraps a *block of code you're running once, right here*.
 
+### Tracing an actual run
+
+Running the exact code above produces two lines — from two different places:
+
+```
+took 0.0907s
+0.09065930200000238
+```
+
+`took 0.0907s` is the `print` living *inside* `__exit__` — it fires the moment the `with` block finishes (right after `total = sum(range(10_000_000))` completes), before control ever reaches the line after `with`. `0.09065930200000238` is the *second*, separate `print(timer.elapsed)` sitting *outside* the `with` block — it's reading the exact same `self.elapsed` value `__exit__` just set, but printing it raw (no `:.4f` formatting this time), so you get the full unrounded float instead of the tidy 4-decimal version. Your own numbers will differ every time you run it — `sum(range(10_000_000))` takes a slightly different amount of wall-clock time depending on your machine and whatever else is running — but the shape is always the same: a short formatted line first, a longer raw float second, and the two are always numerically identical, just rounded differently.
+
+Notice `total` itself never appears anywhere in that output — not because of any timing quirk, just because the code never calls `print(total)`. It's computed, assigned to a local variable inside the block, and then simply sits there unused. It genuinely is fully computed *before* `__exit__` runs, though — not concurrently, not after. Go back to the mechanical translation from §2:
+
+```
+manager = Timer()
+timer = manager.__enter__()
+try:
+    total = sum(range(10_000_000))    # <-- the ENTIRE with-block body runs to completion here
+finally:
+    manager.__exit__(None, None, None)   # <-- only reached AFTER the try block is fully done
+```
+
+`__exit__` lives inside the `finally`, and a `finally` block only ever runs *after* its `try` block has finished — whether that finish was normal completion or an exception. So the sequence is strictly: `__enter__` runs, then the *entire* block body runs top to bottom (here just one line, but it could be ten and every one would finish first), and only once that's completely done does `__exit__` fire. That's exactly why `self.start` is captured in `__enter__` and `self.elapsed` is computed in `__exit__` — the elapsed time is measured across precisely that gap: everything the block did, start to finish, before cleanup runs.
+
 ## 4. `__exit__`'s return value — suppressing exceptions
 
 This is the part that trips people up, and it's genuinely important: **whatever `__exit__` returns controls whether an exception that happened inside the block keeps propagating, or gets silently swallowed.**
@@ -141,6 +165,14 @@ with timer():
     total = sum(range(10_000_000))
 ```
 
+Running this prints exactly one line:
+
+```
+took 0.0911s
+```
+
+Trace the flow step by step, leaning on the generator pause/resume mechanics from the generators doc: `timer()` doesn't run any of the function's body yet — calling a generator function only ever builds a generator object, it never executes anything (same as always). Entering the `with` block is what actually resumes it for the first time: `start = time.perf_counter()` runs, then execution hits `yield` and **pauses right there** — exactly like `next()` pausing a generator at its first `yield`, except here it's `contextmanager`'s machinery doing the "advancing" instead of you calling `next()` by hand. Since this `yield` has no value (`yield` alone, not `yield something`), there's nothing to bind to a `with ... as x`, which is why this `with timer():` line has no `as` at all. The block body (`total = sum(...)`) now runs to completion. Leaving the `with` block is what resumes the *paused* generator a second time, picking up exactly where it left off — right after `yield`, inside the `finally`: `elapsed` gets computed, and `print(f"took {elapsed:.4f}s")` runs. The generator then reaches the end of the function and stops, exactly as any exhausted generator does.
+
 The mental model: **everything before `yield` is `__enter__`; everything after `yield` is `__exit__`.** `contextmanager` takes your generator function and wraps it so that calling `timer()` doesn't run the function immediately — instead, entering the `with` block resumes the generator up to its `yield`, and leaving the `with` block resumes it *from* the `yield` to the end (exactly the "pause and resume" mechanics from the generators doc — this is a real, direct application of that mechanism, not a coincidence). Whatever you `yield` (or `yield some_value`) becomes the thing bound to `as name`, same role as `__enter__`'s return value:
 
 ```python
@@ -158,6 +190,14 @@ with timer() as t:
 print(t["elapsed"])
 ```
 
+Running this prints one line — note this version has no `print` inside the function itself, so the only output is the plain `print(t["elapsed"])` at the very bottom:
+
+```
+0.11294325500000468
+```
+
+Same pause/resume flow as before, with one difference — this time `yield result` yields an actual value (the empty dict), so that's what gets bound to `t`. Trace it: `timer()` builds the generator, `start` and `result = {}` run, execution pauses at `yield result`, and `t` is now bound to that *same* dict object — not a copy of it, the literal same object living inside the paused generator's frame. The block runs (`total = sum(...)`). Leaving the block resumes the generator past `yield`, into the `finally`, where `result["elapsed"] = ...` mutates that dict *in place*. Because `t` and `result` are two names pointing at the exact same dictionary object, that mutation is immediately visible through `t` too — `t["elapsed"]` now holds the elapsed time, even though `t` was assigned back when the dict was still empty. This is the same "shared reference, not a copy" behavior any mutable object has in Python — nothing special to context managers, just worth noticing since it's *how* a `yield`ed empty container ends up populated by the time you read it after the `with` block.
+
 The `try`/`finally` around the `yield` is not optional — it's the *entire mechanism* by which this style handles exceptions correctly. If the `with` block raises, that exception surfaces at the `yield` line itself (the generator resumes with an exception injected exactly where it paused, instead of resuming normally) — without the `finally`, your cleanup code after `yield` would simply never run on the failure path, silently reintroducing the exact bug `with` exists to prevent.
 
 ## 6. Multiple context managers in one `with`
@@ -166,6 +206,24 @@ The `try`/`finally` around the `yield` is not optional — it's the *entire mech
 with open("in.txt") as fin, open("out.txt", "w") as fout:
     fout.write(fin.read())
 ```
+
+Worth slowing down on that one line, `fout.write(fin.read())`, since two files and two operations are packed into it. `fin` is the file object for `in.txt`, opened for reading (the default mode of `open(...)` with no second argument). `fout` is the file object for `out.txt`, opened for **writing** — the `"w"` mode argument — which means `out.txt` gets created if it doesn't exist yet, or completely emptied out first if it already does, before anything is written to it.
+
+Python evaluates the *inner* call first, same as any nested function call: `fin.read()` runs, reading the **entire contents** of `in.txt` from wherever the file's read-position currently is (right at the start, since `fin` was just opened) all the way to the end of the file, and returns it as one single string — for example, given an `in.txt` containing three lines, `fin.read()` returns the string `"first line\nsecond line\nthird line\n"` (the `\n` characters are the actual newlines from the file, now sitting inside the string itself, not something Python added). That whole string is now sitting in memory, as the temporary result of `fin.read()` — nothing has touched `out.txt` yet.
+
+*Then* `fout.write(...)` runs, taking that string and writing it into `out.txt`. Concretely, with `in.txt` containing:
+```
+first line
+second line
+third line
+```
+running the `with` block above and then opening `out.txt` shows:
+```
+first line
+second line
+third line
+```
+— `out.txt`'s contents end up identical to `in.txt`'s, because `fout.write` received the exact string `fin.read()` produced and wrote all of it, unchanged, into the (now-emptied) output file. The net effect of the whole line: **read all of `in.txt`, then write all of it into `out.txt`** — a full-file copy, done in one line because `read()` and `write()` compose directly, with `read()`'s return value flowing straight into `write()`'s argument without ever being stored in its own named variable.
 
 This is exactly equivalent to nesting them:
 
