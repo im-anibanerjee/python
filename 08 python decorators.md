@@ -64,6 +64,57 @@ print(slow_square(5))
 
 Notice `wrapper(*args, **kwargs)` — this is not optional decoration, it's load-bearing. The wrapper has to accept *any* arguments, because it stands in for a function it knows nothing about ahead of time. Without `*args, **kwargs`, this decorator could only ever wrap functions that take zero arguments — `slow_square(5)` would fail immediately, since `wrapper()` wouldn't accept the `5`. `*args`/`**kwargs` get their own full doc soon (Topic 8), but you need enough of them right now to write any decorator that isn't trivial: `*args` collects any number of positional arguments into a tuple, `**kwargs` collects any number of keyword arguments into a dict, and `func(*args, **kwargs)` unpacks them back out to call the original function with whatever it was actually given.
 
+### `func` vs `args`/`kwargs` — passed once at decoration, passed fresh on every call
+
+Easy to conflate these, so separate them explicitly. `func` is a parameter of the **outer** function (`timer`, or `shout` in §1) — it gets a value exactly **once**, at decoration time, when `timer(slow_square)` (or `shout(say_hello)`) actually runs. `wrapper` itself has no `func` parameter in its own signature at all. It reaches `func` through a **closure**: because `wrapper`'s body refers to a name (`func`) that belongs to its enclosing function, Python keeps that enclosing scope alive and attached to `wrapper` even after the outer function has already returned. `func` is effectively taped onto `wrapper` once, and stays there for as long as that particular `wrapper` object exists.
+
+`args`/`kwargs`, by contrast, are parameters of `wrapper` itself, and get a *fresh* value on **every call** — that's the entire reason `*args, **kwargs` exists.
+
+Traced end to end for `timer`:
+
+```
+DEFINITION TIME (runs once)
+----------------------------
+@timer
+def slow_square(n): ...
+
+is exactly:
+    def slow_square(n): ...
+    slow_square = timer(slow_square)     # func = original slow_square, passed ONCE
+                                            # timer defines + returns wrapper
+                                            # wrapper closes over func
+    # slow_square now refers to wrapper, not the original function
+
+CALL TIME (runs every time you call it)
+----------------------------------------
+slow_square(5)
+  = wrapper(5)                    # slow_square IS wrapper now
+        args = (5,)  kwargs = {}    # <- passed fresh, this call only
+        result = func(*args, **kwargs)     # func reached via closure, NOT passed in again
+               = original slow_square(5)
+        ...
+```
+
+Same story for `shout`/`say_hello` (§1), minus `args`/`kwargs` entirely, since `say_hello` takes no arguments:
+
+```
+DECORATION LINE (runs once)
+------------------------------
+say_hello = shout(say_hello)     # func = original say_hello, passed ONCE
+                                   # wrapper closes over func
+                                   # say_hello now refers to wrapper
+
+CALL TIME (every call)
+------------------------
+say_hello()
+  = wrapper()                     # say_hello IS wrapper now
+        print("BEFORE")
+        func()                      # func reached via closure — original say_hello()
+        print("AFTER")
+```
+
+The pattern to hold onto: whatever the outer decorator function's parameter is called (`func`, here) gets bound exactly once, at decoration time, and lives on inside the inner function purely through closure — never passed to it again. Whatever the inner function's own parameters are (`*args, **kwargs`, or nothing at all if the wrapped function takes nothing) get supplied fresh, on every single call.
+
 ## 3. `functools.wraps` — the thing every real decorator needs
 
 Run this and look closely at what gets printed:
