@@ -45,7 +45,9 @@ sequential took 3.00s
 
 Each call fully finishes — including its entire 1-second wait — before the next one is even allowed to *start*. The "starting" and "done" for `b` never interleave with `a`'s at all; they're strictly one-after-another. This is completely normal, ordinary Python — nothing wrong with it, except that all 3 seconds are spent, and for at least ~1 of those seconds at any given moment, your CPU is doing absolutely nothing except waiting for a timer (or, in real life, waiting for a network reply). `asyncio` exists to reclaim that dead time.
 
-**Also worth keeping in view — the same idea, framed around URLs instead of named tasks (this is often how you'll first see it written elsewhere):**
+**Also worth keeping in view — the same idea, framed around URLs instead of named tasks (this is often how you'll first see it written elsewhere).**
+
+Imagine fetching data from three different websites, one after another, the normal way:
 
 ```python
 import time, requests
@@ -60,6 +62,8 @@ for url in ["a.com", "b.com", "c.com"]:
 ```
 
 (`requests` is imported here only because that's the library you'd actually reach for to fetch a real URL — this particular snippet never calls it; it's `time.sleep(1)` standing in for "some slow network call," the same way `fetch("a", 1)` above stood in for it with a plain delay number instead of a URL string.)
+
+Each `fetch` call **blocks** — the entire program sits there doing nothing, waiting for that one network request, before it can even start the next one. But almost all of that 1 second per call isn't your CPU doing work — it's your program idly waiting on a network response. The CPU is free the entire time; nothing is stopping you from starting request 2 while request 1 is still waiting for its response. `asyncio` is Python's tool for doing exactly that: running many *I/O-bound* operations (network calls, file/database I/O, anything that spends most of its time waiting rather than computing) concurrently, on a single thread, by explicitly handing control back and forth between them whenever one of them is just waiting.
 
 Important scope note up front: `asyncio` helps with **I/O-bound** waiting — things where the delay is external (network, disk, a database). It does **not** speed up **CPU-bound** work (heavy computation, tight loops crunching numbers) — for that, you'd need actual parallelism (multiple threads or processes), which is a different topic entirely (the GIL doc, right after this one, explains exactly why threads don't help with CPU-bound Python code the way you might expect).
 
@@ -80,8 +84,11 @@ Real output:
 ```
 <coroutine object greet at 0x7f2a1c0e5940>
 ```
+(this line was originally annotated in-code as `print(result)     # <coroutine object greet at 0x...> — NOT "hello", NOT "done"` — the comment guessed exactly what the real run above now shows for real.)
 
 Not `"hello"`. Not `"done"`. This is the single most important thing to absorb before anything else makes sense, so let's slow all the way down on *why*.
+
+This is the single most common first surprise: calling `greet()` does **not** run the function body — `print("hello")` never happens here. `async def` defines a **coroutine function**; calling it just builds a **coroutine object**, ready to run, exactly the same relationship as a generator function and the generator object it returns (`def gen(): yield 1` vs `gen()` — calling it builds an object, doesn't execute anything yet). A coroutine only actually *runs* when something explicitly drives it forward — either `await`ing it from inside another coroutine, or handing it to the event loop via `asyncio.run(...)`.
 
 **`async def greet(): ...` is a *definition*, like every `def` you've ever written — it does not run anything, it just teaches Python what `greet` means, and stores that recipe under the name `greet`.**
 
@@ -107,8 +114,13 @@ Real output:
 hello
 done
 ```
+(originally annotated in-code as `print(result)     # hello` / `                        # done` — again, the real run above matches the guess exactly.)
 
 `asyncio.run(coroutine)` is the thing that actually picks up the recipe card and starts cooking — it creates an **event loop** (explained fully in §3), runs the given coroutine inside it from start to finish, and hands back whatever that coroutine `return`ed. Call it exactly **once**, at the very top level of your program — it's your program's front door into the async world, not something you sprinkle throughout your code.
+
+Put plainly, the way it was first written:
+
+`asyncio.run(coroutine)` is the standard entry point: it creates an event loop, runs the given coroutine to completion inside it, and returns whatever that coroutine returned. It's meant to be called *once*, at the top level of your program — not from inside another coroutine.
 
 The other way to drive a coroutine forward is `await` — from *inside* another coroutine, which is the entire subject of the next section. Call `asyncio.run()` exactly once, at the top level of your program — not from inside another coroutine, and (as the box right after the flow diagram below proves) not even wrapped in `await` from inside one either.
 
@@ -194,10 +206,15 @@ Real output (takes about 1 second):
 a: starting
 a: done
 ```
+(the `await asyncio.sleep(delay)` line was originally annotated in-code as `await asyncio.sleep(delay)     # pause HERE, but let other things run meanwhile`, and the expected output was originally sketched as comments — `# a: starting` / `# (1 second passes)` / `# a: done` — which the real run above now confirms exactly.)
 
 Nothing surprising yet with just *one* coroutine — but the mechanics of that pause are exactly what makes multiple coroutines interesting, so trace it precisely:
 
 `fetch("a", 1)` is called inside `asyncio.run(...)` — builds a coroutine object, and `asyncio.run` immediately starts driving it. `print(f"{name}: starting")` runs — prints `a: starting`. Then execution reaches `await asyncio.sleep(1)`.
+
+In the original phrasing:
+
+`await` can only appear inside an `async def` function, and it means: "pause *this* coroutine right here until the thing I'm awaiting finishes — but don't block the entire program while waiting; let the event loop go run something else in the meantime, if there's anything else to run." This is mechanically the same pause-and-resume idea as `yield` in a generator (which is not a coincidence — coroutines are built on the same underlying machinery) — except a generator pauses waiting for `next()` to be called again by *you*, while a coroutine pauses waiting for the awaited operation (a sleep, a network response, anything) to actually finish, and the *event loop* is what resumes it automatically once that happens.
 
 **`await` means: "I need to wait for this thing to finish. While I wait, I am not blocking anything — I am handing control back to the event loop, so it can go do something else useful, and it will come back and resume me the moment this is actually done."** This is the exact "put it in the oven and go do something else" moment from §0. `asyncio.sleep(1)` itself is a coroutine too (it's `async def` under the hood) — awaiting it doesn't freeze the program, it registers "wake this coroutine back up in 1 second" with the event loop and steps aside.
 
@@ -293,7 +310,7 @@ async def main():
         fetch("c", 1),
     )
     print(results)
-    print(f"gather took {time.perf_counter() - start:.2f}s")
+    print(f"gather took {time.perf_counter() - start:.2f}s")   # first written as: print(f"took {time.perf_counter() - start:.2f}s")
 
 asyncio.run(main())
 ```
@@ -309,6 +326,7 @@ c: done
 ['data from a', 'data from b', 'data from c']
 gather took 1.00s
 ```
+(originally sketched, before this was actually run, as comments: `# a: starting` / `# b: starting` / `# c: starting` / `# (about 1 second passes, not 3)` / `# a: done` / `# b: done` / `# c: done` / `# ['data from a', 'data from b', 'data from c']` / `# took 1.00s` — matching the real output above line for line.)
 
 Compare that to what you get from doing the three `fetch` calls the "obvious" way, one `await` after another with no `gather`:
 
@@ -329,7 +347,11 @@ c: done
 sequential took 3.00s
 ```
 
-Same 1-second delay each, but 3 seconds total instead of 1 — because each `await` here fully waits for that *one* `fetch` to completely finish before even *starting* the next one. `gather` is different: it hands the event loop *all three* coroutines to run **concurrently**, right from the start. Full timeline, moment by moment, for the `gather` version:
+Same 1-second delay each, but 3 seconds total instead of 1 — because each `await` here fully waits for that *one* `fetch` to completely finish before even *starting* the next one. `gather` is different: it hands the event loop *all three* coroutines to run **concurrently**, right from the start.
+
+This is the payoff. `asyncio.gather(*coroutines)` starts all the given coroutines and runs them **concurrently** — all three print "starting" essentially immediately, because each one hits its `await asyncio.sleep(...)` and hands control straight back to the event loop, which immediately moves on to start the next one. All three sleeps are happening *during the same one second*, not stacked one after another — so the whole thing finishes in about 1 second total, not 3. `gather` waits for all of them to finish and returns their results as a list, in the same order they were passed in (regardless of which one actually finished first).
+
+Full timeline, moment by moment, for the `gather` version:
 
 ```
 TIMELINE — asyncio.gather(fetch("a",1), fetch("b",1), fetch("c",1))
@@ -366,6 +388,8 @@ Notice: all three "starting" prints happen essentially instantly, back to back, 
 
 **One thread. Not three.** Nothing here is happening at the literal same instant on separate CPU cores — it's one thread rapidly handing control between three coroutines, each of which only ever "does work" for a tiny fraction of a second (the two `print` calls) and spends the rest of its 1 second simply not needing the CPU at all. That's **concurrency** (taking turns, making combined progress) as opposed to **parallelism** (genuinely simultaneous execution on multiple cores) — a distinction worth being precise about, since it's a real interview question, covered again in §8.
 
+**Concurrency, not parallelism** — worth being precise about this distinction, since it's a real interview question. This is all still happening on a **single thread**. Nothing is running at the *exact same instant*; instead, the event loop is rapidly switching between coroutines, running each one until it hits an `await` and pauses, then moving to the next ready one — cooperative multitasking, not true simultaneous execution. It works beautifully for I/O-bound waiting (where nothing is actually happening on the CPU during the wait anyway), but it wouldn't speed up genuine CPU-bound computation at all, since there's only ever one thread doing the actual computing.
+
 ---
 
 ## 5. `asyncio.create_task()` — start now, collect the result later
@@ -380,11 +404,11 @@ async def fetch(name, delay):
     return f"data from {name}"
 
 async def main():
-    task = asyncio.create_task(fetch("a", 2))
+    task = asyncio.create_task(fetch("a", 2))   # first written as: # starts running NOW, in the background
     print("task started, doing other stuff")
     await asyncio.sleep(0.5)
     print("still doing other stuff")
-    result = await task
+    result = await task   # first written as: # NOW wait for it to actually finish
     print(result)
 
 asyncio.run(main())
@@ -445,6 +469,10 @@ line: print(result)
 
 The key insight `create_task` demonstrates: **scheduling something and starting to run it are two different moments, and the thing you scheduled only actually gets a turn to run once your own coroutine hits an `await` and steps aside.** If `main()` never awaited anything before `await task`, task "a" would never have gotten a chance to even print `"a: starting"` — nothing forces a switch except an explicit `await`. This is also why `gather` internally builds tasks for everything you give it: creating a `Task` is what lets something start running "in the background" while you go do something else, rather than blocking on it immediately the way a bare `await some_coroutine()` would.
 
+Put the way it was first written:
+
+`create_task(coroutine)` schedules a coroutine to start running immediately (as soon as the event loop next gets a chance) and hands you back a `Task` object you can hold onto — without blocking on it right away like a plain `await` would. You can go do other things, and `await task` later to actually collect its result once you need it. `gather` is really a convenience built on top of this same idea — it creates tasks for everything you pass it and awaits them all together.
+
 ---
 
 ## 6. `async with` — an async context manager, fully built and run
@@ -495,6 +523,23 @@ Trace it exactly like the plain `with` translation from the previous doc, just w
 
 *(Worth noting explicitly, since it's easy to skim past: these dunders — `__aenter__`/`__aexit__` here, and `__aiter__`/`__anext__` just below — are exactly what real async libraries implement under the hood: database drivers, HTTP clients like `aiohttp`, anything where opening a connection or fetching the next row is itself a slow, I/O-bound step that should yield control while it waits rather than block everything, precisely like `AsyncResource` above.)*
 
+Before it was built out into the real, runnable `AsyncResource` above, this section was first sketched only as the shape of the syntax, not real running code:
+
+```python
+async def read_file_async():
+    async with some_async_resource() as res:     # async version of a context manager
+        data = await res.read()
+    return data
+
+async def process_stream():
+    async for item in some_async_generator():    # async version of iterating
+        print(item)
+```
+
+In that original phrasing:
+
+These exist because a regular context manager's `__enter__`/`__exit__` and a regular iterator's `__next__` are ordinary, blocking function calls — they can't themselves `await` anything internally. `async with` (using `__aenter__`/`__aexit__`) and `async for` (using `__aiter__`/`__anext__`) are the asynchronous counterparts, letting *entering*, *exiting*, or *fetching the next item* each involve their own `await` internally — used by real async libraries (database drivers, HTTP clients like `aiohttp`) where opening a connection or fetching the next row is itself an I/O-bound operation that should yield control while it waits, not block everything.
+
 ## `async for` — an async generator, fully built and run
 
 ```python
@@ -527,83 +572,25 @@ received: 2
 
 Making many independent API calls concurrently instead of one at a time (exactly the `fetch` example above, just with `aiohttp` or `httpx` instead of `requests` — `requests` itself is synchronous/blocking and doesn't cooperate with an event loop at all; mixing a blocking library like `requests` into async code silently reintroduces the exact blocking problem `asyncio` exists to avoid, the same way `time.sleep()` would). Handling many simultaneous client connections in a web server (this is exactly why FastAPI — already on your resume roadmap — supports `async def` route handlers: so the server can serve other requests while one request's handler is waiting on a database query, instead of one slow request freezing every other user). Reading from multiple files or database connections concurrently. Streaming results from a database row by row with `async for`, as in §6, instead of waiting for the entire result set to load first.
 
+Originally written, in full:
+
+Making many independent API calls concurrently instead of one at a time (exactly the fetch example above, just with `aiohttp` or `httpx` instead of `requests`, since `requests` itself is synchronous/blocking and doesn't cooperate with an event loop at all — this is a genuine gotcha: mixing a blocking library like `requests` into async code silently reintroduces the exact blocking problem `asyncio` exists to avoid). Handling many simultaneous client connections in a web server (this is exactly why FastAPI — already on your resume roadmap — supports `async def` route handlers: so the server can serve other requests while one request's handler is waiting on a database query). Reading from multiple files or database connections concurrently. Anything that's fundamentally "start several slow, wait-heavy things and let them all progress at once" rather than "compute something fast."
+
 ---
 
 ## 8. Interview-distilled
 
-"What problem does `asyncio` solve?" — running many I/O-bound (waiting-heavy) operations concurrently on a single thread, without full multithreading overhead, by explicitly yielding control at `await` points instead of blocking. (The kitchen analogy from §0 is a genuinely good one to reach for out loud in an interview.)
+"What problem does `asyncio` solve?" — running many I/O-bound (waiting-heavy) operations concurrently on a single thread, without full multithreading overhead, by explicitly yielding control at `await` points instead of blocking. (The kitchen analogy from §0 is a genuinely good one to reach for out loud in an interview.) First phrased as: "What problem does `asyncio` solve?" — running many I/O-bound (waiting-heavy) operations concurrently on a single thread, without the overhead of full multithreading, by explicitly yielding control at `await` points instead of blocking.
 
 "What does `await` actually do?" — pauses the current coroutine until the awaited operation completes, and hands control back to the event loop in the meantime so it can run other ready coroutines, rather than blocking the whole program.
 
-"Concurrency vs. parallelism, in the `asyncio` context?" — concurrency: multiple coroutines make progress by taking turns on one thread (what `asyncio` gives you — like one cook switching between three dishes). Parallelism: multiple things genuinely execute at the same instant, typically on multiple CPU cores (what `asyncio` does *not* give you — that needs multiprocessing, or threads for certain cases, covered in the GIL doc next).
+"Concurrency vs. parallelism, in the `asyncio` context?" — concurrency: multiple coroutines make progress by taking turns on one thread (what `asyncio` gives you — like one cook switching between three dishes). Parallelism: multiple things genuinely execute at the same instant, typically on multiple CPU cores (what `asyncio` does *not* give you — that needs multiprocessing, or threads for certain cases, covered in the GIL doc next). First phrased as: "Concurrency vs. parallelism, in the `asyncio` context?" — concurrency: multiple coroutines make progress by taking turns on one thread (what `asyncio` gives you). Parallelism: multiple things genuinely execute at the same instant, typically on multiple CPU cores (what `asyncio` does *not* give you — that needs multiprocessing, or threads for I/O-release cases, covered in the GIL doc next).
 
 "Why is `time.sleep()` inside async code a bug?" — it blocks the entire thread, including the event loop itself, so no other coroutine can make progress during that time — it defeats the entire purpose of using `asyncio`, unlike `await asyncio.sleep()`, which yields control back.
 
-"When would `asyncio` *not* help?" — CPU-bound work (heavy computation). Since it's cooperative multitasking on one thread, there's no waiting to yield during — the CPU is genuinely busy the whole time, so nothing else gets a turn regardless.
+"When would `asyncio` *not* help?" — CPU-bound work (heavy computation). Since it's cooperative multitasking on one thread, there's no waiting to yield during — the CPU is genuinely busy the whole time, so nothing else gets a turn regardless. First phrased as: "When would `asyncio` *not* help?" — CPU-bound work (heavy computation). Since it's all cooperative multitasking on one thread, there's no waiting to yield during — the CPU is genuinely busy the whole time, so nothing else gets a turn regardless.
 
 "What's the difference between `create_task` and a plain `await`?" — a plain `await some_coroutine()` blocks the current coroutine until that one finishes before moving on. `create_task` schedules it to start running in the background immediately, letting you do other things and `await` its result later, once you actually need it.
-
----
-
-## Appendix — the pre-rewrite version, quoted exactly, for every piece not already carried over inline
-
-This doc went through a substantial rewrite before this merge (new title, new §0, real-run code replacing a couple of illustrative sketches, expanded explanations throughout). Several specific missing pieces were already folded back in directly, inline, above (the sequential/`requests` example in §1, the I/O-vs-CPU scope note, the `asyncio.sleep()` vs `time.sleep()` paragraph in §3, the aiohttp/database-driver note in §6). Everything else the rewrite reworded rather than kept — including the "This is the payoff" and "Concurrency, not parallelism" paragraphs from the old §4 — is quoted below exactly as it was originally written, character for character, so that nothing from the earlier version is missing from this doc, even where it isn't repeated inline a second time:
-
-```text
-# Topic 11 — `asyncio`, Deep Dive
-*Phase 1, Advanced group — item 1 of 5 (asyncio, GIL, type hints/mypy, pytest, logging/profiling). This is the first genuinely new execution model you've met so far — everything up to now ran one line after another, top to bottom. `asyncio` is about running many things that are each mostly *waiting*, without wasting time waiting for them one at a time.*
-## 1. The problem `asyncio` solves
-Imagine fetching data from three different websites, one after another, the normal way:
-Each `fetch` call **blocks** — the entire program sits there doing nothing, waiting for that one network request, before it can even start the next one. But almost all of that 1 second per call isn't your CPU doing work — it's your program idly waiting on a network response. The CPU is free the entire time; nothing is stopping you from starting request 2 while request 1 is still waiting for its response. `asyncio` is Python's tool for doing exactly that: running many *I/O-bound* operations (network calls, file/database I/O, anything that spends most of its time waiting rather than computing) concurrently, on a single thread, by explicitly handing control back and forth between them whenever one of them is just waiting.
-## 2. `async def` — a coroutine function, not a running function
-print(result)     # <coroutine object greet at 0x...> — NOT "hello", NOT "done"
-This is the single most common first surprise: calling `greet()` does **not** run the function body — `print("hello")` never happens here. `async def` defines a **coroutine function**; calling it just builds a **coroutine object**, ready to run, exactly the same relationship as a generator function and the generator object it returns (`def gen(): yield 1` vs `gen()` — calling it builds an object, doesn't execute anything yet). A coroutine only actually *runs* when something explicitly drives it forward — either `await`ing it from inside another coroutine, or handing it to the event loop via `asyncio.run(...)`.
-print(result)     # hello
-                        # done
-`asyncio.run(coroutine)` is the standard entry point: it creates an event loop, runs the given coroutine to completion inside it, and returns whatever that coroutine returned. It's meant to be called *once*, at the top level of your program — not from inside another coroutine.
-## 3. `await` — pausing one coroutine without blocking everything else
-    await asyncio.sleep(delay)     # pause HERE, but let other things run meanwhile
-# a: starting
-# (1 second passes)
-# a: done
-`await` can only appear inside an `async def` function, and it means: "pause *this* coroutine right here until the thing I'm awaiting finishes — but don't block the entire program while waiting; let the event loop go run something else in the meantime, if there's anything else to run." This is mechanically the same pause-and-resume idea as `yield` in a generator (which is not a coincidence — coroutines are built on the same underlying machinery) — except a generator pauses waiting for `next()` to be called again by *you*, while a coroutine pauses waiting for the awaited operation (a sleep, a network response, anything) to actually finish, and the *event loop* is what resumes it automatically once that happens.
-## 4. Running things concurrently — `asyncio.gather()`
-    print(f"took {time.perf_counter() - start:.2f}s")
-# a: starting
-# b: starting
-# c: starting
-# (about 1 second passes, not 3)
-# a: done
-# b: done
-# c: done
-# ['data from a', 'data from b', 'data from c']
-# took 1.00s
-This is the payoff. `asyncio.gather(*coroutines)` starts all the given coroutines and runs them **concurrently** — all three print "starting" essentially immediately, because each one hits its `await asyncio.sleep(...)` and hands control straight back to the event loop, which immediately moves on to start the next one. All three sleeps are happening *during the same one second*, not stacked one after another — so the whole thing finishes in about 1 second total, not 3. `gather` waits for all of them to finish and returns their results as a list, in the same order they were passed in (regardless of which one actually finished first).
-**Concurrency, not parallelism** — worth being precise about this distinction, since it's a real interview question. This is all still happening on a **single thread**. Nothing is running at the *exact same instant*; instead, the event loop is rapidly switching between coroutines, running each one until it hits an `await` and pauses, then moving to the next ready one — cooperative multitasking, not true simultaneous execution. It works beautifully for I/O-bound waiting (where nothing is actually happening on the CPU during the wait anyway), but it wouldn't speed up genuine CPU-bound computation at all, since there's only ever one thread doing the actual computing.
-## 5. `asyncio.create_task()` — starting a coroutine without waiting for it immediately
-    task = asyncio.create_task(fetch("a", 2))     # starts running NOW, in the background
-    result = await task     # NOW wait for it to actually finish
-`create_task(coroutine)` schedules a coroutine to start running immediately (as soon as the event loop next gets a chance) and hands you back a `Task` object you can hold onto — without blocking on it right away like a plain `await` would. You can go do other things, and `await task` later to actually collect its result once you need it. `gather` is really a convenience built on top of this same idea — it creates tasks for everything you pass it and awaits them all together.
-## 6. `async with` and `async for` — the asynchronous versions of familiar syntax
-async def read_file_async():
-    async with some_async_resource() as res:     # async version of a context manager
-        data = await res.read()
-    return data
-
-async def process_stream():
-    async for item in some_async_generator():    # async version of iterating
-        print(item)
-These exist because a regular context manager's `__enter__`/`__exit__` and a regular iterator's `__next__` are ordinary, blocking function calls — they can't themselves `await` anything internally. `async with` (using `__aenter__`/`__aexit__`) and `async for` (using `__aiter__`/`__anext__`) are the asynchronous counterparts, letting *entering*, *exiting*, or *fetching the next item* each involve their own `await` internally — used by real async libraries (database drivers, HTTP clients like `aiohttp`) where opening a connection or fetching the next row is itself an I/O-bound operation that should yield control while it waits, not block everything.
-## 7. Where this actually shows up in real code
-Making many independent API calls concurrently instead of one at a time (exactly the fetch example above, just with `aiohttp` or `httpx` instead of `requests`, since `requests` itself is synchronous/blocking and doesn't cooperate with an event loop at all — this is a genuine gotcha: mixing a blocking library like `requests` into async code silently reintroduces the exact blocking problem `asyncio` exists to avoid). Handling many simultaneous client connections in a web server (this is exactly why FastAPI — already on your resume roadmap — supports `async def` route handlers: so the server can serve other requests while one request's handler is waiting on a database query). Reading from multiple files or database connections concurrently. Anything that's fundamentally "start several slow, wait-heavy things and let them all progress at once" rather than "compute something fast."
-## 8. Interview-distilled
-"What problem does `asyncio` solve?" — running many I/O-bound (waiting-heavy) operations concurrently on a single thread, without the overhead of full multithreading, by explicitly yielding control at `await` points instead of blocking.
-"What does `await` actually do?" — pauses the current coroutine until the awaited operation completes, and hands control back to the event loop in the meantime so it can run other ready coroutines, rather than blocking the whole program.
-"Concurrency vs. parallelism, in the `asyncio` context?" — concurrency: multiple coroutines make progress by taking turns on one thread (what `asyncio` gives you). Parallelism: multiple things genuinely execute at the same instant, typically on multiple CPU cores (what `asyncio` does *not* give you — that needs multiprocessing, or threads for I/O-release cases, covered in the GIL doc next).
-"Why is `time.sleep()` inside async code a bug?" — it blocks the entire thread, including the event loop itself, so no other coroutine can make progress during that time — it defeats the entire purpose of using `asyncio`, unlike `await asyncio.sleep()`, which yields control back.
-"When would `asyncio` *not* help?" — CPU-bound work (heavy computation). Since it's all cooperative multitasking on one thread, there's no waiting to yield during — the CPU is genuinely busy the whole time, so nothing else gets a turn regardless.
-3. **`create_task` and doing something else in between.** Write a coroutine that starts a `fetch("a", 2)` task with `create_task`, then — before awaiting that task — prints a message, awaits a short `asyncio.sleep(0.5)`, prints another message, and only *then* awaits the task to get its result. Confirm from the print order that the task genuinely was progressing in the background the whole time.
-```
 
 ---
 
@@ -613,7 +600,7 @@ Making many independent API calls concurrently instead of one at a time (exactly
 
 2. **Reproduce the `time.sleep()` bug on purpose.** Take your `gather`-based version from Q1 and swap one of the three `fetch` functions to use `time.sleep()` instead of `await asyncio.sleep()`. Run it, time it, and explain in your own words (as a comment) why the total time changes the way it does — tie it to the "blocks the whole event loop" behavior from §3.
 
-3. **`create_task` and doing something else in between.** Write a coroutine that starts a `fetch("a", 2)` task with `create_task`, then — before awaiting that task — prints a message, awaits a short `asyncio.sleep(0.5)`, prints another message, and only *then* awaits the task to get its result. Confirm from the print order that the task genuinely was progressing in the background the whole time (compare your output against §5's traced example).
+3. **`create_task` and doing something else in between.** Write a coroutine that starts a `fetch("a", 2)` task with `create_task`, then — before awaiting that task — prints a message, awaits a short `asyncio.sleep(0.5)`, prints another message, and only *then* awaits the task to get its result. Confirm from the print order that the task genuinely was progressing in the background the whole time (compare your output against §5's traced example). (First phrased without that last cross-reference: "...Confirm from the print order that the task genuinely was progressing in the background the whole time.")
 
 4. **Coroutine object vs. running it.** Write any `async def` function, call it without `await` or `asyncio.run`, and `print()` the result directly — confirm you get a `<coroutine object ...>`, not the function's actual printed output or return value. Then explain in a comment, in your own words, why calling an `async def` function doesn't run its body — tie it back to the generator-function comparison in §2.
 
