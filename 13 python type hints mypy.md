@@ -282,6 +282,15 @@ age
 
 Look closely at what happened: `age="27"` (a string) was silently **coerced into the actual integer `27`** — `type(u.age)` really is `<class 'int'>`, not `str` — because Pydantic looked at the `age: int` hint and decided a numeric string is close enough to convert. `age="not a number"` can't be coerced, so it raises a real `ValidationError` — a genuine runtime exception, not a `mypy`-only, paper-only complaint. This is exactly what happens every time a FastAPI endpoint receives a request body: the hints on your Pydantic model aren't documentation there, they're the actual validation logic, read and enforced live, on every request. It's the one place in this whole doc where "just a label on the jar" stops being true.
 
+One more genuinely worth running: what does `mypy` itself make of this same file? Real `mypy` output:
+```
+t7.py:7: error: Argument "age" to "User" has incompatible type "str"; expected "int"  [arg-type]
+t7.py:11: error: Argument "age" to "User" has incompatible type "str"; expected "int"  [arg-type]
+Found 2 errors in 1 file (checked 1 source file)
+```
+
+`mypy` flags *both* calls — including `User(name="ani", age="27")`, the one that actually worked fine at runtime. This is worth being precise about: `mypy` only knows the *declared* field type (`int`); it has no built-in awareness that Pydantic will coerce a numeric string at runtime, so from a pure static-typing standpoint, passing a `str` where an `int` is declared is a mismatch, full stop. `mypy` and Pydantic are genuinely looking at this differently — one reasoning from the annotation alone, the other reasoning from what it can actually do with the value at runtime. This is exactly why real Pydantic projects install a separate `mypy` plugin (`pydantic.mypy`), which teaches `mypy` about Pydantic's specific coercion and validation behavior instead of flagging every gently-typed call site as an error.
+
 ---
 
 ## 8. Interview-distilled
