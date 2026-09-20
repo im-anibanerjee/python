@@ -1,0 +1,9 @@
+Transaction Ledger CLI
+generated: 2026-09-20T16:18:07
+
+total income: 2500.00
+total expenses: -54.20
+net: 2445.80
+
+transactions considered 2
+-- end of report --

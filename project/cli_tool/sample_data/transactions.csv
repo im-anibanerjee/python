@@ -1,0 +1,6 @@
+date,category,description,amount
+2026-09-01,groceries,Big Bazaar,-54.20
+2026-09-03,salary,September salary,2500.00
+01-09-2026,rent,bad date row,-800.00
+2026-09-10,   ,empty category row,-12.75
+2026-09-15,entertainment,bad amount row,abc
