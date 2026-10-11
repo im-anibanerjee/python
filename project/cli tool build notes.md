@@ -108,14 +108,17 @@ This is the part that ties Piece 1 and Piece 2 together: a classmethod that take
 
 **Questions along the way:**
 
-Q: Why are we using a classmethod here? Why not a usual method with `self`?
-A: `self` only exists once an object has already been built - it *is* that object. `from_row`'s whole job is to build the object in the first place, before any `Transaction` exists, so there's nothing to be `self` yet. `cls` receives the class itself, available the moment the class is defined, long before any instance exists - proven with a small side demo: `Demo.class_method()` works fine with no instance anywhere and prints `got cls = <class '__main__.Demo'>`, while `Demo.instance_method()` (called the same way, no instance) fails with `TypeError: Demo.instance_method() missing 1 required positional argument: 'self'`. That's the exact chicken-and-egg problem a classmethod-based factory avoids.
+**Q:** Why are we using a classmethod here? Why not a usual method with `self`?
 
-Q: Brief explanation of the `!r` (repr) format in `f"invalid amount {raw_amount!r}"`, with examples?
-A: `{value}` in an f-string calls `str(value)`, the friendly display version. `{value!r}` calls `repr(value)`, the unambiguous/debug version - for a string, that means wrapping it in quotes. Real examples: `raw_amount = ""` prints as nothing at all with plain `{raw_amount}` ("invalid amount ") but as `''` with `{raw_amount!r}` ("invalid amount ''") - visibly empty instead of invisible. Same for whitespace-only input (`"  "`): plain shows two invisible spaces, `!r` shows `'  '` so the spaces are actually visible. For an ordinary value like `"12,00"` it barely matters (`12,00` vs `'12,00'`), but for empty/blank edge cases `!r` is the difference between a debuggable message and a confusing one.
+**A:** `self` only exists once an object has already been built - it *is* that object. `from_row`'s whole job is to build the object in the first place, before any `Transaction` exists, so there's nothing to be `self` yet. `cls` receives the class itself, available the moment the class is defined, long before any instance exists - proven with a small side demo: `Demo.class_method()` works fine with no instance anywhere and prints `got cls = <class '__main__.Demo'>`, while `Demo.instance_method()` (called the same way, no instance) fails with `TypeError: Demo.instance_method() missing 1 required positional argument: 'self'`. That's the exact chicken-and-egg problem a classmethod-based factory avoids.
 
-Q: (pasted the `-> "Transaction"` forward-reference explanation) "i did not understand this part" - asked for it to be explained more clearly.
-A: Proved it concretely rather than just restating it. Reproducing the same situation - a classmethod inside a class, returning that same class, unquoted:
+**Q:** Brief explanation of the `!r` (repr) format in `f"invalid amount {raw_amount!r}"`, with examples?
+
+**A:** `{value}` in an f-string calls `str(value)`, the friendly display version. `{value!r}` calls `repr(value)`, the unambiguous/debug version - for a string, that means wrapping it in quotes. Real examples: `raw_amount = ""` prints as nothing at all with plain `{raw_amount}` ("invalid amount ") but as `''` with `{raw_amount!r}` ("invalid amount ''") - visibly empty instead of invisible. Same for whitespace-only input (`"  "`): plain shows two invisible spaces, `!r` shows `'  '` so the spaces are actually visible. For an ordinary value like `"12,00"` it barely matters (`12,00` vs `'12,00'`), but for empty/blank edge cases `!r` is the difference between a debuggable message and a confusing one.
+
+**Q:** (pasted the `-> "Transaction"` forward-reference explanation) "i did not understand this part" - asked for it to be explained more clearly.
+
+**A:** Proved it concretely rather than just restating it. Reproducing the same situation - a classmethod inside a class, returning that same class, unquoted:
 ```python
 class Foo:
     @classmethod
@@ -124,11 +127,13 @@ class Foo:
 ```
 raises `NameError: name 'Foo' is not defined` immediately, genuinely, while Python is still defining the class - because Python runs a class body top-to-bottom like a small script, and the class object itself only gets created and named *after* the whole body finishes running. So while still inside `def make(...)`, the name `Foo` doesn't exist as a usable value yet, and writing `-> Foo` unquoted asks Python to look it up right then. Quoting it (`-> "Foo2"`) sidesteps this entirely: `"Foo2"` is just a string literal, nothing to look up, so nothing fails - it gets stored as literal text (`Foo2.make.__annotations__` shows `{'return': 'Foo2'}`, the text, not the class object). A tool like `mypy` reads that string later, after the whole file has been read and the class genuinely exists, and checks it as if it were the real type. Plain Python at runtime never resolves that string at all.
 
-Q: "So here from the method from_row you are extracting data from the CSV file, creating a class by passing cls(...), and when you are returning this cls, then it calls the init method and hence creates the transaction object.. is my understanding correct?"
-A: Close, but one correction: it's not *returning* `cls` that triggers `__init__` - it's the *call* `cls(parsed_date, raw_category, ...)` itself, and that already happens, fully, before the `return` statement runs at all. Proved with print statements dropped into both `__init__` and `from_row`: the order of real printed output was `[from_row] about to call cls(...)` → `[__init__ running] building the object, amount=42.5` → `[from_row] cls(...) has already returned a real object: <...>` → `[from_row] now returning it`. `__init__` running appears *between* the "about to call" and "already returned" lines - so by the time `from_row` reaches its own `return`, the object is 100% already finished. `return` doesn't cause construction; it just hands back an object that was already built a line earlier.
+**Q:** "So here from the method from_row you are extracting data from the CSV file, creating a class by passing cls(...), and when you are returning this cls, then it calls the init method and hence creates the transaction object.. is my understanding correct?"
 
-Q: "What does fromisoformat is doing?"
-A: `date.fromisoformat(raw_date)` is a constructor on the `date` class that takes a string and, if it's in exact `YYYY-MM-DD` shape (ISO 8601), turns it into a real `date` object with working `.year`/`.month`/`.day` attributes. It does two things at once: parsing the text apart, and validating the shape was right to begin with - real verified proof: `date.fromisoformat("2026-09-01")` returns a proper `date` object, while `date.fromisoformat("2026/09/01")`, `"01-09-2026"`, `"not-a-date"`, and `""` all raise `ValueError: Invalid isoformat string: '...'` rather than silently guessing or returning `None`. That's exactly why `from_row` catches `ValueError` specifically around this call - it's the one and only documented way this constructor fails.
+**A:** Close, but one correction: it's not *returning* `cls` that triggers `__init__` - it's the *call* `cls(parsed_date, raw_category, ...)` itself, and that already happens, fully, before the `return` statement runs at all. Proved with print statements dropped into both `__init__` and `from_row`: the order of real printed output was `[from_row] about to call cls(...)` → `[__init__ running] building the object, amount=42.5` → `[from_row] cls(...) has already returned a real object: <...>` → `[from_row] now returning it`. `__init__` running appears *between* the "about to call" and "already returned" lines - so by the time `from_row` reaches its own `return`, the object is 100% already finished. `return` doesn't cause construction; it just hands back an object that was already built a line earlier.
+
+**Q:** "What does fromisoformat is doing?"
+
+**A:** `date.fromisoformat(raw_date)` is a constructor on the `date` class that takes a string and, if it's in exact `YYYY-MM-DD` shape (ISO 8601), turns it into a real `date` object with working `.year`/`.month`/`.day` attributes. It does two things at once: parsing the text apart, and validating the shape was right to begin with - real verified proof: `date.fromisoformat("2026-09-01")` returns a proper `date` object, while `date.fromisoformat("2026/09/01")`, `"01-09-2026"`, `"not-a-date"`, and `""` all raise `ValueError: Invalid isoformat string: '...'` rather than silently guessing or returning `None`. That's exactly why `from_row` catches `ValueError` specifically around this call - it's the one and only documented way this constructor fails.
 
 ---
 
@@ -218,11 +223,13 @@ This is the piece where `Transaction.from_row`, `InvalidTransactionError`, and `
 
 **Questions along the way:**
 
-Q: (asked for a diagram) how does the raw CSV actually become the row-dicts `from_row` expects?
-A: Answered with a real small CSV and a diagram showing the header line becoming `reader.fieldnames` (the dict keys every row uses), and each following line becoming one dict, verified against real `csv.DictReader` output: `{'date': '2026-09-01', 'category': 'groceries', 'description': 'Big Bazaar', 'amount': '-54.20'}` etc.
+**Q:** (asked for a diagram) how does the raw CSV actually become the row-dicts `from_row` expects?
 
-Q: "for row_number, row in enumerate(reader, start=1):, Explain enumerate again. And why not simply using -> for row_number, row in reader?"
-A: `enumerate(iterable, start=N)` turns each item into a `(number, item)` pair counting up from `N`. Real demo:
+**A:** Answered with a real small CSV and a diagram showing the header line becoming `reader.fieldnames` (the dict keys every row uses), and each following line becoming one dict, verified against real `csv.DictReader` output: `{'date': '2026-09-01', 'category': 'groceries', 'description': 'Big Bazaar', 'amount': '-54.20'}` etc.
+
+**Q:** "for row_number, row in enumerate(reader, start=1):, Explain enumerate again. And why not simply using -> for row_number, row in reader?"
+
+**A:** `enumerate(iterable, start=N)` turns each item into a `(number, item)` pair counting up from `N`. Real demo:
 ```python
 print(list(enumerate(["apple", "banana", "cherry"], start=1)))
 ```
@@ -257,8 +264,9 @@ with open("demo.csv", newline="") as f:
 ```
 `enumerate(reader, start=1)` really does produce `[(1, {row1 dict}), (2, {row2 dict}), ...]`, with the number going into `row_number` and the dict into `row` - exactly the shape needed for `Transaction.from_row(row_number, row)` to work.
 
-Q: can the `for` loop move outside the `with` block, since `reader` already holds the CSV's content?
-A: No - corrected with real proof, not just an explanation. Tried exactly that:
+**Q:** can the `for` loop move outside the `with` block, since `reader` already holds the CSV's content?
+
+**A:** No - corrected with real proof, not just an explanation. Tried exactly that:
 ```python
 with open("demo.csv", newline="") as f:
     reader = csv.DictReader(f)
@@ -272,8 +280,9 @@ ValueError: I/O operation on closed file.
 ```
 `csv.DictReader` is lazy: it doesn't read anything from the file upfront, only when the loop actually asks for the next row - `reader` is really just a thin recipe that says "go pull the next line from `f`," not a container holding real content. The moment the `with` block ends, `f.__exit__` runs and closes the file (`f.closed` confirmed `True` right after, checked directly) - exactly the guarantee from `09 python context managers.md`. Since `reader` never held real data, only a live connection to `f`, asking it for the next row after `f` is closed means asking a closed file for more bytes, which Python correctly refuses. So the loop has to stay *inside* the `with` block - not a style preference, required for the reading to actually happen while the file is open.
 
-Q: "But what if I want to read it all at once? Is that possible?"
-A: Yes, genuinely possible - the trick is `list(reader)`, verified for real:
+**Q:** "But what if I want to read it all at once? Is that possible?"
+
+**A:** Yes, genuinely possible - the trick is `list(reader)`, verified for real:
 ```python
 with open("demo.csv", newline="") as f:
     reader = csv.DictReader(f)
@@ -339,8 +348,9 @@ class TransactionLedger:
 
 **Questions along the way:**
 
-Q: "So what is the essence of this decorator here? What writing it above @load_csv will do"
-A: `load_csv` itself never changes. Every time anyone calls `some_ledger.load_csv(path)`, Python quietly runs it through the wrapper first - start a stopwatch, run the real `load_csv` exactly as written, stop the stopwatch, log how long it took, then hand back whatever `load_csv` returned, as if the decorator was never there. The decorator bolts "measure and log duration" on from the outside, as a reusable layer - if the same timing behavior were ever wanted on another method, `@log_execution_time` could go above that one too, with zero copy-pasted stopwatch code. Concretely, this means a log line like `INFO: load_csv took 0.0139sec` should appear right after the usual "loaded X transactions, skipped Y" line.
+**Q:** "So what is the essence of this decorator here? What writing it above @load_csv will do"
+
+**A:** `load_csv` itself never changes. Every time anyone calls `some_ledger.load_csv(path)`, Python quietly runs it through the wrapper first - start a stopwatch, run the real `load_csv` exactly as written, stop the stopwatch, log how long it took, then hand back whatever `load_csv` returned, as if the decorator was never there. The decorator bolts "measure and log duration" on from the outside, as a reusable layer - if the same timing behavior were ever wanted on another method, `@log_execution_time` could go above that one too, with zero copy-pasted stopwatch code. Concretely, this means a log line like `INFO: load_csv took 0.0139sec` should appear right after the usual "loaded X transactions, skipped Y" line.
 
 **Bug found and fixed (real bug, not style):** first submission was missing `return wrapper` at the end of `log_execution_time` entirely. Verified concretely - running the tool for real raised:
 ```
@@ -400,8 +410,9 @@ class ReportWriter:
 
 **Questions along the way:**
 
-Q: "Am not understanding what is the report manager context is used/essential for, also please explain in short detail again what is entry and exit, use of write_line, and what is file.write and file.close"
-A: Answered with two real demos rather than more words. First, a minimal `Demo` class with nothing but print statements in `__enter__`/`__exit__`, run twice - once with nothing going wrong, once with a `raise ValueError` inside the `with` block:
+**Q:** "Am not understanding what is the report manager context is used/essential for, also please explain in short detail again what is entry and exit, use of write_line, and what is file.write and file.close"
+
+**A:** Answered with two real demos rather than more words. First, a minimal `Demo` class with nothing but print statements in `__enter__`/`__exit__`, run twice - once with nothing going wrong, once with a `raise ValueError` inside the `with` block:
 ```
 --- normal case, nothing goes wrong ---
 [enter] running - opening things up
@@ -434,8 +445,9 @@ second line
 ```
 `open(path, "w")` returns a live file object; `f.write(text)` appends into its internal buffer (no automatic `\n`, which is exactly why `write_line` adds one); `f.close()` flushes to disk and is what actually flips `f.closed` to `True` - the same thing `with open(...)` was doing automatically all along, now being done by hand inside `ReportWriter.__exit__`. `write_line` itself is just a wrapper around `self.file.write(...)` so calling code doesn't need to know `ReportWriter` is holding a real file object at all.
 
-Q: "why can't we simply use with to write the report? why use this specifically this context manager"
-A: Proved the actual difference rather than just restating it. Plain `with open(...)`, deliberately crashing partway through the body:
+**Q:** "why can't we simply use with to write the report? why use this specifically this context manager"
+
+**A:** Proved the actual difference rather than just restating it. Plain `with open(...)`, deliberately crashing partway through the body:
 ```python
 with open("report_plain.txt", "w") as f:
     f.write("MY REPORT\n")
@@ -500,8 +512,9 @@ One more instance of the same recurring habit, not yet cleaned up: `# from datet
 
 **Addendum to Piece 8 - design question: why not a custom context manager for reading too?**
 
-Q: "Another question from previous topic, why while writing we are using self made context manager and while reading we are using with as context manager? Could we have written self made context manager for reading the file also? If so then how would it be? And why we did not use self made context manager if we could have self made context manager for reading"
-A: Reading's entire job is "open this file, make sure it gets closed when done, even if a row crashes while parsing" - and that's exactly and completely what `open()`'s own `__enter__`/`__exit__` already does, for free. Writing needed a custom `ReportWriter` because the job there is more than open/close - a specific header must be written on entry and a specific footer on exit, guaranteed, and `open()` has no idea what a header or footer is; that's business logic only our own class can provide.
+**Q:** "Another question from previous topic, why while writing we are using self made context manager and while reading we are using with as context manager? Could we have written self made context manager for reading the file also? If so then how would it be? And why we did not use self made context manager if we could have self made context manager for reading"
+
+**A:** Reading's entire job is "open this file, make sure it gets closed when done, even if a row crashes while parsing" - and that's exactly and completely what `open()`'s own `__enter__`/`__exit__` already does, for free. Writing needed a custom `ReportWriter` because the job there is more than open/close - a specific header must be written on entry and a specific footer on exit, guaranteed, and `open()` has no idea what a header or footer is; that's business logic only our own class can provide.
 
 Yes, a custom context manager for reading could genuinely have been written - proven for real rather than just described:
 ```python
@@ -632,8 +645,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 **Questions along the way:**
 
-Q: "Did not understand: Right now, if you ran python cli.py summary --input sample_data/transactions.csv --report out.txt, Python would just hand your script a raw list of text: ['summary', '--input', 'sample_data/transactions.csv', '--report', 'out.txt'] (that's sys.argv[1:], literally just strings, no structure). You could parse that by hand — check argv[0] equals "summary", hunt for "--input" and grab the next item — but that gets messy fast, and it's exactly the kind of tedious, error-prone parsing argparse (Python's built-in module for this) exists to handle: you describe what arguments your program accepts, and it does the parsing, validation, and even the --help text generation for you. And this: Real proof: parser.parse_args([...]) turns that flat list of strings into a Namespace object — a plain object where args.command, args.input, args.report, args.month all exist as real attributes you can read directly, no manual string-hunting needed. dest='command' is what makes the which subcommand was used show up as args.command; each subparser (summary_parser, filter_parser) only knows about its own flags, so filter's --month doesn't even exist as an option under summary"
-A: Slowed down with real proof instead of restating it. A tiny throwaway script printing `sys.argv` directly, run as `python manual_demo.py summary --input sample_data/transactions.csv --report out.txt`:
+**Q:** "Did not understand: Right now, if you ran python cli.py summary --input sample_data/transactions.csv --report out.txt, Python would just hand your script a raw list of text: ['summary', '--input', 'sample_data/transactions.csv', '--report', 'out.txt'] (that's sys.argv[1:], literally just strings, no structure). You could parse that by hand — check argv[0] equals "summary", hunt for "--input" and grab the next item — but that gets messy fast, and it's exactly the kind of tedious, error-prone parsing argparse (Python's built-in module for this) exists to handle: you describe what arguments your program accepts, and it does the parsing, validation, and even the --help text generation for you. And this: Real proof: parser.parse_args([...]) turns that flat list of strings into a Namespace object — a plain object where args.command, args.input, args.report, args.month all exist as real attributes you can read directly, no manual string-hunting needed. dest='command' is what makes the which subcommand was used show up as args.command; each subparser (summary_parser, filter_parser) only knows about its own flags, so filter's --month doesn't even exist as an option under summary"
+
+**A:** Slowed down with real proof instead of restating it. A tiny throwaway script printing `sys.argv` directly, run as `python manual_demo.py summary --input sample_data/transactions.csv --report out.txt`:
 ```
 raw sys.argv: ['manual_demo.py', 'summary', '--input', 'sample_data/transactions.csv', '--report', 'out.txt']
 ```
@@ -681,8 +695,9 @@ exit code: 2
 ```
 Refuses immediately with a clear message, before anything bad happens - the entire value of `argparse`, for free, just from `required=True`. `Namespace` is just the clean result object it hands back once parsing succeeds, instead of a loose list of strings to keep hunting through.
 
-Q: "Is it necessary all parameters has to be given or set as true? Can't we keep false here for anything?"
-A: No, `required=True` isn't mandatory - real proof of an optional argument with a fallback:
+**Q:** "Is it necessary all parameters has to be given or set as true? Can't we keep false here for anything?"
+
+**A:** No, `required=True` isn't mandatory - real proof of an optional argument with a fallback:
 ```python
 parser.add_argument("--input", required=True)
 parser.add_argument("--top-n", required=False, default=5, type=int)   # optional, with a fallback
@@ -694,8 +709,9 @@ call 2 -> Namespace(input='x.csv', top_n=10, verbose=True)
 ```
 When `--top-n` isn't given, it quietly becomes `5` (whatever `default=` says) instead of erroring; `--verbose` uses `action="store_true"` instead - a flag with no value after it, `False` unless present. For this CLI specifically though, `--input`/`--report`/`filter`'s `--month` are genuinely required on purpose - there's no sensible default input file, output path, or month, so skipping any of them means the command literally can't do its job. Same reasoning as `Transaction.from_row` raising on a missing `category` instead of quietly defaulting it.
 
-Q: "Here we are creating subparsers under each parser, how we will pass the arguments can you show or give example it will help me understand."
-A: Real, full demo running all three subcommands for real:
+**Q:** "Here we are creating subparsers under each parser, how we will pass the arguments can you show or give example it will help me understand."
+
+**A:** Real, full demo running all three subcommands for real:
 ```python
 parser = argparse.ArgumentParser(prog="cli.py")
 subparsers = parser.add_subparsers(dest="command", required=True)
@@ -731,8 +747,9 @@ exit code: 2
 ```
 Rejected outright - `summary_parser` was never told `--month` exists.
 
-Q: "Not related to this code but in general, can we just use parsers and not subparsers? Or subparsers are always to be created? If only parsers can be given then give me an example code where only parsers are provided in argparse without subparsers"
-A: No, subparsers aren't mandatory - they only exist for a program with multiple distinct verbs needing different flags. A program that only ever does one job is fine with a single flat parser:
+**Q:** "Not related to this code but in general, can we just use parsers and not subparsers? Or subparsers are always to be created? If only parsers can be given then give me an example code where only parsers are provided in argparse without subparsers"
+
+**A:** No, subparsers aren't mandatory - they only exist for a program with multiple distinct verbs needing different flags. A program that only ever does one job is fine with a single flat parser:
 ```python
 import argparse
 
@@ -752,11 +769,13 @@ Namespace(input='notes.txt', top_n=10)
 ```
 No `command`, no `subparsers.add_parser(...)` anywhere - `add_argument(...)` goes directly on the one top-level parser. Rule of thumb: reach for subparsers when a program needs more than one distinct thing with more than one distinct set of flags (like this CLI); skip them when the program only ever does one job.
 
-Q: "Here u are giving summary as arg in 1 and by-category in 2nd and filter in 3rd, so what happens to by-category and filter in 1st, summary, filter in 2nd and so on respectively for the other case."
-A: Each of those three demo blocks was a completely separate *run* of the program, not one continuous execution handling all three. `python cli.py summary ...` is the entire program starting fresh, running once, and finishing - there's no leftover session where `by-category`/`filter` are waiting or getting skipped; they simply never got invoked this run, because only one command word was typed. To actually run `by-category`, the script runs *again*, as a brand new, separate execution: `python cli.py by-category --input transactions.csv --report cat.txt`. Each `python`/`python3 ...` line in the demos was its own fresh run from the top - exactly how a CLI tool is used day to day, once per command.
+**Q:** "Here u are giving summary as arg in 1 and by-category in 2nd and filter in 3rd, so what happens to by-category and filter in 1st, summary, filter in 2nd and so on respectively for the other case."
 
-Q: "Also i see Namespace(...) where is that coming from? I never saw namespace in any part of code or traching, or in this code particular, am i missing something? why it is being passed"
-A: `Namespace` is a real class living inside the `argparse` module itself, not something written or appearing from nowhere. Real proof:
+**A:** Each of those three demo blocks was a completely separate *run* of the program, not one continuous execution handling all three. `python cli.py summary ...` is the entire program starting fresh, running once, and finishing - there's no leftover session where `by-category`/`filter` are waiting or getting skipped; they simply never got invoked this run, because only one command word was typed. To actually run `by-category`, the script runs *again*, as a brand new, separate execution: `python cli.py by-category --input transactions.csv --report cat.txt`. Each `python`/`python3 ...` line in the demos was its own fresh run from the top - exactly how a CLI tool is used day to day, once per command.
+
+**Q:** "Also i see Namespace(...) where is that coming from? I never saw namespace in any part of code or traching, or in this code particular, am i missing something? why it is being passed"
+
+**A:** `Namespace` is a real class living inside the `argparse` module itself, not something written or appearing from nowhere. Real proof:
 ```python
 args = parser.parse_args(['summary', '--input', 'transactions.csv', '--report', 'out.txt'])
 print(type(args))
@@ -775,8 +794,9 @@ print(ns.y)       # hello
 ```
 So `parser.parse_args()` internally creates a `Namespace()` object, then for every flag it parsed, does the equivalent of `setattr(that_object, flag_name, value)` - exactly why `args.command`/`args.input`/`args.report` work, ordinary attributes on an ordinary object, same as `self.amount` on a `Transaction`. Never seen before simply because this is the first piece to use `argparse` at all. Printing as `Namespace(command='summary', ...)` is the same `repr()` concept from Piece 3's `!r` discussion - every object type has its own way of displaying itself.
 
-Q: "Can you explain: [the three Namespace outputs from the subparser demo] What we are passsing in each case and what will be taken as input in each case and for each case what will be triggered and how? how passing these values as arguments gets into this ledger.py and calls the respective methods? Will be helpful if explained with code examples and flow diagram"
-A: Traced the full pipeline with a preview `main()` - explicitly flagged as a preview run in a scratch copy, not yet in the real file - built and run for real end to end:
+**Q:** "Can you explain: [the three Namespace outputs from the subparser demo] What we are passsing in each case and what will be taken as input in each case and for each case what will be triggered and how? how passing these values as arguments gets into this ledger.py and calls the respective methods? Will be helpful if explained with code examples and flow diagram"
+
+**A:** Traced the full pipeline with a preview `main()` - explicitly flagged as a preview run in a scratch copy, not yet in the real file - built and run for real end to end:
 ```python
 def main():
     parser = build_parser()
@@ -901,8 +921,9 @@ The rest (`if args.command == ...`/`elif ...`) is purely wiring already-verified
 
 **Questions along the way:**
 
-Q: "there is no transactions.csv file, also a question where is this args.command, args.report or other args.?? am not able to understand, when am typing args.rep am not getting suggestion for report or command or others"
-A: Two separate things. First, the missing file was a path mix-up, not a real problem - the real CSV genuinely exists, at `sample_data/transactions.csv` inside `cli_tool` (confirmed by pulling it directly), but a couple of the preceding demo messages used a shortened `transactions.csv` path because those ran in a separate scratch folder with the CSV copied directly alongside the script - that shortcut doesn't apply to the real project, where the full path `sample_data/transactions.csv` is needed.
+**Q:** "there is no transactions.csv file, also a question where is this args.command, args.report or other args.?? am not able to understand, when am typing args.rep am not getting suggestion for report or command or others"
+
+**A:** Two separate things. First, the missing file was a path mix-up, not a real problem - the real CSV genuinely exists, at `sample_data/transactions.csv` inside `cli_tool` (confirmed by pulling it directly), but a couple of the preceding demo messages used a shortened `transactions.csv` path because those ran in a separate scratch folder with the CSV copied directly alongside the script - that shortcut doesn't apply to the real project, where the full path `sample_data/transactions.csv` is needed.
 
 Second, the autocomplete question - genuinely no suggestions, and for a real reason, not a setup problem. Proof:
 ```python
@@ -1000,8 +1021,9 @@ The three bad-row tests each build a `row` with exactly one thing wrong (bad dat
 
 **Questions along the way:**
 
-Q: "You mentioned: `for category, total in sorted(totals.items(), key=lambda kv: kv[1]):` what is the lambda function here, am not able to understand"
-A: `lambda x: x ** 2` is a tiny, unnamed function written inline - genuinely identical to a normal `def`. Real proof both give the same result:
+**Q:** "You mentioned: `for category, total in sorted(totals.items(), key=lambda kv: kv[1]):` what is the lambda function here, am not able to understand"
+
+**A:** `lambda x: x ** 2` is a tiny, unnamed function written inline - genuinely identical to a normal `def`. Real proof both give the same result:
 ```python
 square = lambda x: x ** 2
 def square_normal(x): return x ** 2
@@ -1026,8 +1048,9 @@ sorted by kv[1] (the amount): [('rent', -800.0), ('groceries', -54.2), ('salary'
 ```
 `rent` (most negative) comes first - matching the spec's "most negative first." `lambda` was used here (instead of a separate named `def`) purely because it's small and used in exactly one place.
 
-Q: "with pytest.raises(InvalidTransactionError): not able to understand this. What is being done here? Can we raise exceptions from context managers? Is with being used as context manager here?"
-A: Yes - `pytest.raises(...)` genuinely is a context manager, using the exact same `with` mechanism as `ReportWriter`/`open()`, but its `__exit__` does something deliberately unusual with whatever exception it receives. Three real scenarios run to prove it:
+**Q:** "with pytest.raises(InvalidTransactionError): not able to understand this. What is being done here? Can we raise exceptions from context managers? Is with being used as context manager here?"
+
+**A:** Yes - `pytest.raises(...)` genuinely is a context manager, using the exact same `with` mechanism as `ReportWriter`/`open()`, but its `__exit__` does something deliberately unusual with whatever exception it receives. Three real scenarios run to prove it:
 ```python
 def test_expected_exception_raised():
     with pytest.raises(InvalidTransactionError):
@@ -1180,8 +1203,9 @@ def test_report_writer_footer_written_even_if_body_raises(tmp_path):
 
 **Questions along the way:**
 
-Q: "Explain please, Inside with we are adding another with, please explain the mechanism, flow with a flow diagram and the working of this code."
-A: Two context managers stacked - the inner one (`ReportWriter`) always gets first crack when an exception fires inside it, the outer one (`pytest.raises`) gets the next crack. Demonstrated with two stand-in classes mirroring the real shapes, each printing on enter/exit:
+**Q:** "Explain please, Inside with we are adding another with, please explain the mechanism, flow with a flow diagram and the working of this code."
+
+**A:** Two context managers stacked - the inner one (`ReportWriter`) always gets first crack when an exception fires inside it, the outer one (`pytest.raises`) gets the next crack. Demonstrated with two stand-in classes mirroring the real shapes, each printing on enter/exit:
 ```
 --- starting ---
 [Outer.__enter__] getting ready to expect an exception
@@ -1200,8 +1224,9 @@ Flow: `raise ValueError` fires inside the innermost block → Python calls the *
 
 ## Running the tool and tests
 
-Q: "okay, but the question is how to run this? what commands to give for checking this application etc"
-A: Two separate things get run, both from inside `cli_tool` (`D:\interview prep\python\project\cli_tool`).
+**Q:** "okay, but the question is how to run this? what commands to give for checking this application etc"
+
+**A:** Two separate things get run, both from inside `cli_tool` (`D:\interview prep\python\project\cli_tool`).
 
 Running the tests (checks the code is still correct):
 ```
@@ -1223,8 +1248,9 @@ python cli.py filter --input sample_data/transactions.csv --report out_filter.tx
 
 **Decided: both.** A `reports/` folder now exists in `cli_tool` as the conventional place to point `--report` at (e.g. `--report reports/summary.txt`), and the README's example command uses it - but `--report` is just an ordinary argument, so it still accepts any path, including straight into `cli_tool` if that's ever wanted for a one-off check.
 
-Q: "Give example of commands using both report folder and cli, or folder path outside report, then what about the Namespace command, earlier you gave passing Namespace, when asked how to give the commands but you are not passing now"
-A: Two real commands run to show both, plus the `Namespace` each one actually produces underneath:
+**Q:** "Give example of commands using both report folder and cli, or folder path outside report, then what about the Namespace command, earlier you gave passing Namespace, when asked how to give the commands but you are not passing now"
+
+**A:** Two real commands run to show both, plus the `Namespace` each one actually produces underneath:
 ```
 python cli.py summary --input sample_data/transactions.csv --report reports/summary.txt
 ```
